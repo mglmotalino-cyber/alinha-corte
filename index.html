@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101827">
+<title>Alinha Corte — câmera e simetria facial</title>
+<style>
+:root{color-scheme:dark;--bg:#101827;--panel:#192437;--line:#39e6b0;--text:#f3f6fb;--muted:#aab6c8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px system-ui,-apple-system,Segoe UI,sans-serif}
+header{padding:18px 16px 12px;text-align:center}h1{font-size:1.35rem;margin:0 0 5px}header p{margin:0;color:var(--muted);font-size:.92rem}
+main{max-width:850px;margin:auto;padding:0 12px 24px}.camera{position:relative;width:100%;aspect-ratio:3/4;max-height:68vh;margin:auto;background:#080d15;border-radius:18px;overflow:hidden;border:1px solid #35445b}
+video,canvas{position:absolute;width:100%;height:100%;inset:0;object-fit:cover}video{transform:scaleX(-1)}canvas{pointer-events:none}
+.placeholder{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--muted);z-index:2}
+.status{padding:10px 12px;margin:10px 0;background:var(--panel);border-radius:12px;color:var(--muted);font-size:.9rem}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.controls button,.controls select{border:0;border-radius:12px;padding:12px 14px;font-weight:650;background:#263750;color:white;flex:1;min-width:120px}.controls .primary{background:#0e9f78}.controls button:disabled{opacity:.45}
+.panel{background:var(--panel);padding:14px;border-radius:14px;margin-top:12px}.panel h2{font-size:1rem;margin:0 0 10px}.options{display:grid;grid-template-columns:1fr 1fr;gap:12px}.option label{display:block;color:var(--muted);font-size:.86rem;margin-bottom:6px}.option input{width:100%;accent-color:var(--line)}.option select{width:100%;padding:10px;border-radius:9px;background:#263750;color:white;border:0}
+.small{font-size:.82rem;color:var(--muted);line-height:1.5}.metric{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #304056}.metric:last-child{border:0}.metric strong{color:var(--line)}
+@media(min-width:650px){.camera{aspect-ratio:4/3;max-height:65vh}.options{grid-template-columns:repeat(4,1fr)}}
+</style>
+</head>
+<body>
+<header><h1>✂️ Alinha Corte</h1><p>Use a câmera como guia para alinhar o rosto, a barba e o corte.</p></header>
+<main>
+  <div class="camera" id="cameraBox">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="placeholder" id="placeholder">Este app precisa de acesso à câmera do seu smartphone.<br><br>Toque em <b>Permitir acesso à câmera</b> quando o navegador solicitar a autorização.</div>
+  </div>
+  <div class="status" id="status" role="status">A câmera ainda não foi ativada. A imagem é processada no aparelho.</div>
+  <div class="small" id="diagnostic" style="text-align:center;margin:6px 0 10px"></div>
+  <div class="controls">
+    <button class="primary" id="start">Permitir acesso à câmera</button>
+    <button id="flip" disabled>Trocar câmera</button>
+    <button id="guides">Ocultar guias</button>
+    <button id="snapshot" disabled>Salvar foto</button>
+  </div>
+  <section class="panel">
+    <h2>Ajuste as guias</h2>
+    <div class="options">
+      <div class="option"><label for="vertical">Linha central</label><input id="vertical" type="range" min="35" max="65" value="50"></div>
+      <div class="option"><label for="horizontal">Altura da linha</label><input id="horizontal" type="range" min="20" max="80" value="48"></div>
+      <div class="option"><label for="width">Largura do contorno</label><input id="width" type="range" min="35" max="85" value="62"></div>
+      <div class="option"><label for="style">Guia de corte</label><select id="style"><option value="fade">Degradê / americano</option><option value="straight">Linha reta</option><option value="beard">Barba e bigode</option></select></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Como alinhar</h2>
+    <div class="metric"><span>1. Centralize o rosto</span><span>Olhos na horizontal</span></div>
+    <div class="metric"><span>2. Confira a simetria</span><span>Use a linha vertical</span></div>
+    <div class="metric"><span>3. Marque o corte</span><span>Compare as laterais</span></div>
+    <p class="small">As linhas são referências visuais, não uma medição clínica nem uma detecção automática do cabelo. A câmera frontal pode inverter a imagem como um espelho. Para maior precisão, mantenha o aparelho firme, na altura dos olhos e com boa iluminação.</p>
+  </section>
+</main>
+<script>
+(() => {
+ const video=document.getElementById('video'), canvas=document.getElementById('overlay'), ctx=canvas.getContext('2d');
+ const status=document.getElementById('status'), placeholder=document.getElementById('placeholder');
+ const start=document.getElementById('start'), flip=document.getElementById('flip'), snap=document.getElementById('snapshot');
+ let stream=null, facing='user', showGuides=true, busy=false;
+ const $=id=>document.getElementById(id);
+ function size(){const r=canvas.getBoundingClientRect();const dpr=Math.min(window.devicePixelRatio||1,2);canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);draw();}
+ function draw(){
+  const w=canvas.clientWidth,h=canvas.clientHeight;ctx.clearRect(0,0,w,h);if(!showGuides)return;
+  const cx=w*Number($('vertical').value)/100, cy=h*Number($('horizontal').value)/100, fw=w*Number($('width').value)/100;
+  ctx.save();ctx.lineWidth=2;ctx.strokeStyle='#39e6b0';ctx.fillStyle='#39e6b0';ctx.setLineDash([7,6]);
+  ctx.beginPath();ctx.moveTo(cx,0);ctx.lineTo(cx,h);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,cy);ctx.lineTo(w,cy);ctx.stroke();ctx.setLineDash([]);
+  // Face-shaped guide, intended as a positioning reference.
+  ctx.strokeStyle='rgba(57,230,176,.88)';ctx.lineWidth=2;
+  ctx.beginPath();ctx.ellipse(cx,h*.46,fw*.34,h*.34,0,0,Math.PI*2);ctx.stroke();
+  // Eye level and temple/cut guides.
+  ctx.strokeStyle='rgba(255,255,255,.88)';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(cx-fw*.27,h*.39);ctx.lineTo(cx-fw*.09,h*.39);ctx.moveTo(cx+fw*.09,h*.39);ctx.lineTo(cx+fw*.27,h*.39);ctx.stroke();
+  const style=$('style').value;
+  ctx.strokeStyle='#ffcc66';ctx.lineWidth=2;ctx.setLineDash([5,5]);
+  if(style==='fade'){
+    ctx.beginPath();ctx.moveTo(cx-fw*.32,h*.32);ctx.quadraticCurveTo(cx-fw*.28,h*.43,cx-fw*.23,h*.49);
+    ctx.moveTo(cx+fw*.32,h*.32);ctx.quadraticCurveTo(cx+fw*.28,h*.43,cx+fw*.23,h*.49);ctx.stroke();
+  } else if(style==='straight'){
+    ctx.beginPath();ctx.moveTo(cx-fw*.32,h*.35);ctx.lineTo(cx-fw*.23,h*.52);ctx.moveTo(cx+fw*.32,h*.35);ctx.lineTo(cx+fw*.23,h*.52);ctx.stroke();
+  } else {
+    ctx.beginPath();ctx.moveTo(cx-fw*.23,h*.56);ctx.quadraticCurveTo(cx,h*.72,cx+fw*.23,h*.56);ctx.moveTo(cx-fw*.12,h*.64);ctx.quadraticCurveTo(cx,h*.68,cx+fw*.12,h*.64);ctx.stroke();
+  }
+  ctx.setLineDash([]);ctx.font='12px system-ui';ctx.fillStyle='#fff';ctx.fillText('CENTRO',Math.min(cx+6,w-58),16);ctx.restore();
+ }
+ function explainCameraError(e){
+  const name=e && e.name ? e.name : 'Erro desconhecido';
+  const messages={
+   NotAllowedError:'A permissão foi bloqueada. No Chrome, toque no ícone ao lado do endereço do site > Permissões > Câmera > Permitir; depois recarregue a página.',
+   PermissionDeniedError:'A permissão da câmera foi negada. Ative-a nas permissões do site e tente novamente.',
+   NotFoundError:'Nenhuma câmera foi encontrada neste aparelho ou navegador.',
+   NotReadableError:'A câmera está ocupada por outro aplicativo ou o sistema não conseguiu abri-la. Feche outros apps que usam a câmera e tente de novo.',
+   OverconstrainedError:'A câmera não aceitou as configurações solicitadas. Tente novamente ou troque de câmera.',
+   SecurityError:'O navegador bloqueou o acesso à câmera por segurança.',
+   AbortError:'A abertura da câmera foi interrompida. Tente novamente.'
+  };
+  return (messages[name] || ('O navegador retornou '+name+(e?.message?': '+e.message:''))) + ' Código: '+name+'.';
+ }
+ async function enable(){
+  if(busy)return;busy=true;start.disabled=true;status.textContent='Solicitando acesso à câmera…';
+  if(!window.isSecureContext){
+   status.textContent='A câmera foi bloqueada porque esta página não está em um contexto seguro. Abra o aplicativo por um endereço HTTPS (não por um visualizador/preview de arquivo).';
+   diagnostic.textContent='Contexto seguro: não. A câmera exige HTTPS ou localhost.';start.disabled=false;busy=false;return;
+  }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+   status.textContent='Este navegador/visualizador não disponibiliza acesso à câmera. Abra o link diretamente no Chrome ou outro navegador atualizado.';
+   diagnostic.textContent='API da câmera indisponível nesta página.';start.disabled=false;busy=false;return;
+  }
+  try{
+   if(stream)stream.getTracks().forEach(t=>t.stop());
+   video.pause();video.srcObject=null;
+   let newStream;
+   try { newStream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720}}}); }
+   catch(firstError){
+    if(firstError.name==='OverconstrainedError' || firstError.name==='NotFoundError') newStream=await navigator.mediaDevices.getUserMedia({audio:false,video:true});
+    else throw firstError;
+   }
+   stream=newStream;video.srcObject=stream;
+   await new Promise((resolve,reject)=>{if(video.readyState>=2){resolve();return;}video.onloadedmetadata=()=>resolve();video.onerror=()=>reject(new Error('O vídeo não conseguiu carregar.'));setTimeout(()=>reject(new Error('A câmera abriu, mas o vídeo demorou para iniciar.')),10000);});
+   await video.play();placeholder.style.display='none';flip.disabled=false;snap.disabled=false;
+   status.textContent='Câmera ativa. Ajuste as guias e alinhe o rosto no centro.';diagnostic.textContent='Câmera: '+(stream.getVideoTracks()[0]?.label || 'ativa')+' · Contexto seguro: sim';start.textContent='Reiniciar câmera';size();
+  }catch(e){
+   if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}video.srcObject=null;placeholder.style.display='grid';
+   status.textContent=explainCameraError(e);diagnostic.textContent='Verifique a permissão do site e se outro aplicativo está usando a câmera.';
+  }finally{start.disabled=false;busy=false;}
+ }
+ const diagnostic=document.getElementById('diagnostic');
+ diagnostic.textContent=window.isSecureContext ? 'Contexto seguro detectado. A câmera pedirá autorização.' : 'Atenção: contexto não seguro; a câmera pode ser bloqueada. Use HTTPS.';
+ start.addEventListener('click',enable);
+ flip.addEventListener('click',()=>{facing=facing==='user'?'environment':'user';enable();});
+ $('guides').addEventListener('click',()=>{showGuides=!showGuides;$('guides').textContent=showGuides?'Ocultar guias':'Mostrar guias';draw();});
+ ['vertical','horizontal','width','style'].forEach(id=>$(id).addEventListener('input',draw));
+ window.addEventListener('resize',size);
+ snap.addEventListener('click',()=>{
+  if(!video.videoWidth){return;}
+  const out=document.createElement('canvas');out.width=video.videoWidth;out.height=video.videoHeight;const c=out.getContext('2d');
+  if(facing==='user'){c.translate(out.width,0);c.scale(-1,1);}c.drawImage(video,0,0,out.width,out.height);
+  const scale=out.width/canvas.clientWidth;c.save();c.scale(scale,scale);c.drawImage(canvas,0,0,canvas.width/(window.devicePixelRatio||1),canvas.height/(window.devicePixelRatio||1));c.restore();
+  const a=document.createElement('a');a.download='alinha-corte.png';a.href=out.toDataURL('image/png');a.click();
+ });
+ size();
+})();
+</script>
+</body>
+</html>
